@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TEMPO ENGINE</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Arial, sans-serif;
+    }
+    body {
+      margin: 24px;
+      max-width: 980px;
+    }
+    h1 {
+      margin-bottom: 16px;
+    }
+    .field {
+      margin-bottom: 16px;
+    }
+    label {
+      display: block;
+      font-weight: bold;
+      margin-bottom: 6px;
+    }
+    textarea {
+      width: 100%;
+      min-height: 160px;
+      font-family: Consolas, Monaco, monospace;
+      font-size: 13px;
+      padding: 8px;
+      box-sizing: border-box;
+    }
+    #outputPython {
+      min-height: 240px;
+    }
+    button {
+      padding: 10px 14px;
+      margin-right: 8px;
+      cursor: pointer;
+    }
+    #message {
+      margin-top: 12px;
+      padding: 10px;
+      border-radius: 4px;
+      white-space: pre-wrap;
+    }
+    #message.error {
+      background: #ffe9e9;
+      color: #9a0000;
+      border: 1px solid #e4b2b2;
+    }
+    #message.success {
+      background: #e9ffef;
+      color: #0c5d24;
+      border: 1px solid #9ed6ae;
+    }
+  </style>
+</head>
+<body>
+  <h1>TEMPO ENGINE</h1>
+
+  <div class="field">
+    <label for="inputList">INPUT LIST</label>
+    <textarea id="inputList" placeholder=""></textarea>
+  </div>
+
+  <div class="field">
+    <label for="inputRules">INPUT REGRAS ADICIONAIS</label>
+    <textarea id="inputRules" placeholder=""></textarea>
+  </div>
+
+  <div class="field">
+    <button id="btnGenerate" type="button">GERAR PYTHON BLENDER</button>
+  </div>
+
+  <div class="field">
+    <label for="outputPython">OUTPUT PYTHON BLENDER</label>
+    <textarea id="outputPython" readonly></textarea>
+  </div>
+
+  <div class="field">
+    <button id="btnCopy" type="button">COPIAR PYTHON</button>
+  </div>
+
+  <div id="message" role="alert" aria-live="polite"></div>
+
+  <script>
+    function setMessage(text, type) {
+      const box = document.getElementById('message');
+      box.textContent = text;
+      box.className = type || '';
+    }
+
+    function extractLayer(listText) {
+      const match = listText.match(/Layer:\s*"([^"]+)"/i);
+      return match ? match[1].trim() : null;
+    }
+
+    function extractPoints(listText) {
+      const points = [];
+      const regex = /at point\s+X=([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s+Y=([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s+Z=([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)/gi;
+      let match;
+      while ((match = regex.exec(listText)) !== null) {
+        points.push([
+          Number(match[1]),
+          Number(match[2]),
+          Number(match[3])
+        ]);
+      }
+      return points;
+    }
+
+    function ensureClosed(points) {
+      if (points.length < 2) return points;
+      const first = points[0];
+      const last = points[points.length - 1];
+      if (first[0] !== last[0] || first[1] !== last[1] || first[2] !== last[2]) {
+        points.push([first[0], first[1], first[2]]);
+      }
+      return points;
+    }
+
+    function buildPython(esppJson) {
+      const embedded = JSON.stringify(esppJson, null, 2);
+      return `import json\nimport sys\nfrom pathlib import Path\n\nROOT = Path.cwd()\nif str(ROOT) not in sys.path:\n    sys.path.insert(0, str(ROOT))\n\nfrom tempo_engine import clean_prefix, create_polyline_solid\n\nESPP_JSON = r'''${embedded}'''\ndata = json.loads(ESPP_JSON)\n\nfor obj in data.get("objects", []):\n    if obj.get("type") != "POLYLINE":\n        continue\n\n    points = [(p[0], p[1]) for p in obj.get("points", [])]\n    clean_prefix(obj.get("layer", ""))\n\n    create_polyline_solid(\n        name=obj.get("name"),\n        points=points,\n        base_z=obj.get("base_z", 0.0),\n        extrude=obj.get("extrude", 0.0),\n        rgb=obj.get("color", [255, 255, 255])\n    )\n`;
+    }
+
+    document.getElementById('btnGenerate').addEventListener('click', function () {
+      setMessage('', '');
+      const inputList = document.getElementById('inputList').value;
+      const inputRules = document.getElementById('inputRules').value;
+      const output = document.getElementById('outputPython');
+
+      if (!inputList.trim()) {
+        output.value = '';
+        setMessage('Erro: INPUT LIST está vazio.', 'error');
+        return;
+      }
+
+      if (!inputRules.trim()) {
+        output.value = '';
+        setMessage('Erro: INPUT REGRAS ADICIONAIS está vazio.', 'error');
+        return;
+      }
+
+      let rules;
+      try {
+        rules = JSON.parse(inputRules);
+      } catch (err) {
+        output.value = '';
+        setMessage('Erro: INPUT REGRAS ADICIONAIS não é JSON válido.', 'error');
+        return;
+      }
+
+      const layerName = extractLayer(inputList);
+      if (!layerName) {
+        output.value = '';
+        setMessage('Erro: Layer não encontrado no INPUT LIST. Use o padrão Layer: "NOME".', 'error');
+        return;
+      }
+
+      const layers = rules.layers || {};
+      const layerRule = layers[layerName];
+      if (!layerRule) {
+        output.value = '';
+        setMessage(`Erro: Layer "${layerName}" não encontrado em INPUT REGRAS ADICIONAIS.`, 'error');
+        return;
+      }
+
+      const points = ensureClosed(extractPoints(inputList));
+      if (points.length < 3) {
+        output.value = '';
+        setMessage('Erro: pontos insuficientes no INPUT LIST (mínimo 3 pontos).', 'error');
+        return;
+      }
+
+      const prefix = String(layerRule.prefix || layerName || 'OBJ_');
+      const objectName = `${prefix}001`;
+
+      const esppJson = {
+        units: rules.units || 'meters',
+        objects: [
+          {
+            type: layerRule.type || 'POLYLINE',
+            name: objectName,
+            layer: layerName,
+            points: points,
+            base_z: Number(layerRule.base_z ?? 0.0),
+            extrude: Number(layerRule.extrude ?? 0.0),
+            color: Array.isArray(layerRule.color) ? layerRule.color : [255, 255, 255]
+          }
+        ]
+      };
+
+      output.value = buildPython(esppJson);
+      setMessage('Python Blender gerado com sucesso.', 'success');
+    });
+
+    document.getElementById('btnCopy').addEventListener('click', async function () {
+      const output = document.getElementById('outputPython').value;
+      if (!output.trim()) {
+        setMessage('Erro: não há Python para copiar.', 'error');
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(output);
+        setMessage('Python copiado para a área de transferência.', 'success');
+      } catch (err) {
+        setMessage('Erro ao copiar Python. Copie manualmente o conteúdo do OUTPUT PYTHON BLENDER.', 'error');
+      }
+    });
+  </script>
+</body>
+</html>
